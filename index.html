@@ -1,184 +1,30 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>⚡ 進度保留版 - 漫畫翻譯 & 嵌字工作站</title>
-    
-    <!-- 引入 PDF.js 與 jsPDF -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <!-- 引入 Tesseract.js 進行 OCR 辨識 -->
-    <script src='https://unpkg.com/tesseract.js@v4.0.2/dist/tesseract.min.js'></script>
+/* 修改這段樣式 */
+.text-overlay {
+    position: absolute; 
+    background-color: white; /* 確保背景是純白，蓋住日文 */
+    border: none; /* 移除虛線框，讓取代效果更自然 */
+    box-sizing: border-box; 
+    padding: 2px; 
+    display: flex; 
+    flex-direction: column; 
+    z-index: 10;
+}
 
-    <style>
-        body { font-family: 'Segoe UI', 微軟正黑體, sans-serif; background-color: #f4f6f9; color: #333; margin: 0; padding: 20px; }
-        .container { max-width: 1400px; margin: 0 auto; }
-        header { text-align: center; margin-bottom: 15px; color: #2c3e50; }
-        
-        .toolbar {
-            background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.06); display: flex; justify-content: space-between;
-            align-items: center; flex-wrap: wrap; gap: 15px;
-        }
-        
-        .btn-upload { border: 2px dashed #9b59b6; color: #9b59b6; background-color: white; padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; }
-        .btn-upload:hover { background-color: #f5eef8; }
-        .btn-upload.yellow { border-color: #f39c12; color: #f39c12; }
-        .btn-group { display: flex; gap: 10px; }
-        button.action-btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold; color: white; }
-        .btn-yellow { background: #f39c12; }
-        .btn-purple { background: #9b59b6; }
-        
-        .workspace { display: flex; gap: 20px; height: 75vh; }
-        .page-list { width: 240px; background: white; padding: 10px; border-radius: 8px; overflow-y: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-        .page-item { padding: 12px; margin-bottom: 6px; background: #f8f9fa; border-radius: 4px; cursor: pointer; font-size: 13px; border-left: 4px solid transparent; }
-        .page-item.active { background: #e8f4fd; color: #1a73e8; font-weight: bold; border-left-color: #3498db; }
-        
-        .editor-panel { flex: 1; background: white; padding: 15px; border-radius: 8px; overflow: auto; display: flex; flex-direction: column; align-items: center; position: relative; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-        #image-container { position: relative; display: inline-block; user-select: none; }
-        #manga-image { max-width: 100%; height: auto; display: none; pointer-events: none; }
-        #draw-box { position: absolute; border: 2px dashed #e74c3c; background: rgba(255, 255, 255, 0.45); display: none; pointer-events: none; z-index: 5; }
-
-        .text-overlay { position: absolute; background-color: white; border: 1px dashed #3498db; box-sizing: border-box; padding: 2px; display: flex; flex-direction: column; z-index: 10; }
-        .text-overlay textarea { width: 100%; flex-grow: 1; border: none; resize: none; font-size: 16px; font-weight: bold; outline: none; text-align: center; }
-        
-        .overlay-controls { display: flex; gap: 5px; background: #eee; padding: 2px; justify-content: space-between; }
-        .btn-ctrl { font-size: 10px; cursor: pointer; border: none; border-radius: 3px; background: #3498db; color: white; }
-        .btn-del { background: #e74c3c; }
-        .btn-ocr { background: #27ae60; }
-        
-        #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.9); z-index: 9999; display: none; justify-content: center; align-items: center; flex-direction: column; }
-    </style>
-</head>
-<body>
-
-    <div id="loading-overlay">
-        <div class="spinner"></div>
-        <h3 id="loading-text">準備就緒...</h3>
-    </div>
-
-    <div class="container">
-        <header><h2>漫畫翻譯 & 專業嵌字工作站</h2></header>
-        <div class="toolbar">
-            <input type="file" id="file-selector" accept="application/pdf, image/*" multiple style="display:none">
-            <button class="btn-upload" onclick="document.getElementById('file-selector').click()">📁 載入漫畫</button>
-            <button class="action-btn btn-yellow" onclick="saveProject()">💾 儲存進度</button>
-            <button class="action-btn btn-purple" onclick="exportAsPDF()">📕 匯出 PDF</button>
-        </div>
-
-        <div class="workspace">
-            <div class="page-list" id="page-list"></div>
-            <div class="editor-panel">
-                <div id="image-container">
-                    <img id="manga-image" alt="漫畫頁面">
-                    <div id="draw-box"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let pagesData = []; let currentIndex = -1;
-        let isDrawing = false; let startX, startY;
-
-        // OCR 核心函數
-        async function runOCR(el, textarea) {
-            showLoading(true, "正在辨識日文 (OCR)...");
-            try {
-                // 獲取該區塊的 Canvas 影像
-                const canvas = document.createElement('canvas');
-                canvas.width = parseFloat(el.style.width);
-                canvas.height = parseFloat(el.style.height);
-                const ctx = canvas.getContext('2d');
-                
-                // 截取對應位置
-                const imgElement = document.getElementById('manga-image');
-                const scaleX = imgElement.naturalWidth / imgElement.clientWidth;
-                const scaleY = imgElement.naturalHeight / imgElement.clientHeight;
-                
-                ctx.drawImage(imgElement, 
-                    parseFloat(el.style.left) * scaleX, parseFloat(el.style.top) * scaleY, 
-                    parseFloat(el.style.width) * scaleX, parseFloat(el.style.height) * scaleY,
-                    0, 0, canvas.width, canvas.height);
-
-                const { data: { text } } = await Tesseract.recognize(canvas, 'jpn');
-                textarea.value = text.trim();
-                saveCurrentOverlays();
-            } catch (e) {
-                alert("辨識失敗，請重試");
-            }
-            hideLoading();
-        }
-
-        function showLoading(show, text) {
-            document.getElementById('loading-overlay').style.display = show ? 'flex' : 'none';
-            document.getElementById('loading-text').textContent = text;
-        }
-
-        // --- 核心邏輯 ---
-        const container = document.getElementById('image-container');
-        const drawBox = document.getElementById('draw-box');
-        const img = document.getElementById('manga-image');
-
-        container.addEventListener('mousedown', (e) => {
-            if (currentIndex === -1 || e.target.tagName !== 'IMG') return;
-            isDrawing = true;
-            const rect = container.getBoundingClientRect();
-            startX = e.clientX - rect.left; startY = e.clientY - rect.top;
-            drawBox.style.left = startX + 'px'; drawBox.style.top = startY + 'px';
-            drawBox.style.width = '0px'; drawBox.style.height = '0px'; drawBox.style.display = 'block';
-        });
-
-        container.addEventListener('mousemove', (e) => {
-            if (!isDrawing) return;
-            const rect = container.getBoundingClientRect();
-            const curX = e.clientX - rect.left; const curY = e.clientY - rect.top;
-            drawBox.style.left = Math.min(startX, curX) + 'px'; drawBox.style.top = Math.min(startY, curY) + 'px';
-            drawBox.style.width = Math.abs(curX - startX) + 'px'; drawBox.style.height = Math.abs(curY - startY) + 'px';
-        });
-
-        container.addEventListener('mouseup', (e) => {
-            if (!isDrawing) return;
-            isDrawing = false; drawBox.style.display = 'none';
-            const w = parseFloat(drawBox.style.width); const h = parseFloat(drawBox.style.height);
-            if (w > 20 && h > 20) {
-                createOverlayElement(parseFloat(drawBox.style.left), parseFloat(drawBox.style.top), w, h, '');
-                saveCurrentOverlays();
-            }
-        });
-
-        function createOverlayElement(x, y, w, h, text) {
-            const overlay = document.createElement('div');
-            overlay.className = 'text-overlay';
-            overlay.style.left = x + 'px'; overlay.style.top = y + 'px';
-            overlay.style.width = w + 'px'; overlay.style.height = h + 'px';
-
-            const controls = document.createElement('div');
-            controls.className = 'overlay-controls';
-            
-            const btnOCR = document.createElement('button');
-            btnOCR.textContent = 'OCR'; btnOCR.className = 'btn-ctrl btn-ocr';
-            btnOCR.onclick = () => runOCR(overlay, textarea);
-            
-            const btnDel = document.createElement('button');
-            btnDel.textContent = 'X'; btnDel.className = 'btn-ctrl btn-del';
-            btnDel.onclick = () => { overlay.remove(); saveCurrentOverlays(); };
-
-            const textarea = document.createElement('textarea');
-            textarea.value = text; textarea.oninput = saveCurrentOverlays;
-
-            controls.appendChild(btnOCR); controls.appendChild(btnDel);
-            overlay.appendChild(controls); overlay.appendChild(textarea);
-            container.appendChild(overlay);
-        }
-
-        // 引入你原本的檔案載入與儲存邏輯...
-        // (此處省略部分重複邏輯，請將你原有的 file-selector 事件處理程式碼放回此處)
-        
-        function saveCurrentOverlays() { /* 原有邏輯 */ }
-        function saveProject() { /* 原有邏輯 */ }
-        function exportAsPDF() { /* 原有邏輯 */ }
-    </script>
-</body>
-</html>
+/* 確保輸入框樣式更像漫畫字體 */
+.text-overlay textarea {
+    width: 100%; 
+    height: 100%; 
+    border: none; 
+    resize: none; 
+    background: transparent;
+    font-family: 'Microsoft JhengHei', sans-serif; /* 微軟正黑體 */
+    font-size: 18px; /* 可以依漫畫對話框大小微調 */
+    font-weight: bold;
+    color: black; 
+    outline: none; 
+    overflow: hidden; 
+    text-align: center; /* 讓文字置中，看起來更整齊 */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
