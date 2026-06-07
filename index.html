@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>⚡ 完美相容版 - 漫畫翻譯 & 嵌字工作站</title>
+    <title>⚡ 進度條強化版 - 漫畫翻譯 & 嵌字工作站</title>
     
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -87,10 +87,10 @@
         .status-msg { font-weight: bold; color: #2c3e50; margin-bottom: 5px; font-size: 16px; }
         .hint { color: #7f8c8d; font-size: 13px; margin-bottom: 10px; }
         
-        /* 讀取遮罩 */
+        /* 讀取遮罩與進度條 */
         #loading-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(255,255,255,0.9); z-index: 9999; display: none;
+            background: rgba(255,255,255,0.95); z-index: 9999; display: none;
             justify-content: center; align-items: center; flex-direction: column;
         }
         .spinner {
@@ -98,13 +98,28 @@
             width: 50px; height: 50px; animation: spin 1s linear infinite; margin-bottom: 15px;
         }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    </style>
+        
+        .progress-container {
+            width: 300px; height: 12px; background: #e0e0e0; border-radius: 6px;
+            margin-top: 15px; overflow: hidden; display: none;
+        }
+        #progress-bar {
+            height: 100%; width: 0%; background: #9b59b6; transition: width 0.2s ease;
+        }
+        #progress-percent {
+            margin-top: 8px; font-weight: bold; color: #555; display: none;
+        }
+    </script>
 </head>
 <body>
 
     <div id="loading-overlay">
         <div class="spinner"></div>
-        <h3 id="loading-text" style="color:#9b59b6;">正在解析 PDF 檔案環境...</h3>
+        <h3 id="loading-text" style="color:#9b59b6; margin:0;">準備就緒...</h3>
+        <div class="progress-container" id="progress-container">
+            <div id="progress-bar"></div>
+        </div>
+        <div id="progress-percent">0%</div>
     </div>
 
     <div class="container">
@@ -144,47 +159,67 @@
         let pagesData = []; 
         let currentIndex = -1;
 
-        // 【大招：繞過 GitHub Pages CORS 限制】
-        // 使用 Blob URL 將外部 Worker 引入，這樣瀏覽器就不會阻擋非同步解析
+        // 繞過 GitHub Pages CORS 限制
         try {
             const workerCode = "importScripts('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js');";
             const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
             pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(workerBlob);
         } catch (e) {
-            console.error("Worker 初始化失敗，切換至備用模式", e);
+            console.error("Worker 初始化失敗", e);
         }
 
         const container = document.getElementById('image-container');
         const drawBox = document.getElementById('draw-box');
         const img = document.getElementById('manga-image');
-        let isDrawing = false;
-        let startX, startY;
+        let isDrawing = false; let startX, startY;
 
-        // 監聽視窗縮放，確保文字框位置不歪掉
         window.addEventListener('resize', () => { if(currentIndex !== -1) renderOverlays(); });
 
+        // --- 控制載入畫面的函數 ---
+        function showLoading(showProgress = false) {
+            document.getElementById('loading-overlay').style.display = 'flex';
+            document.getElementById('progress-container').style.display = showProgress ? 'block' : 'none';
+            document.getElementById('progress-percent').style.display = showProgress ? 'block' : 'none';
+            updateProgress(0, 1, "處理開始...");
+        }
+
+        function hideLoading() {
+            document.getElementById('loading-overlay').style.display = 'none';
+        }
+
+        function updateProgress(current, total, text) {
+            const percent = Math.round((current / total) * 100);
+            document.getElementById('loading-text').textContent = text;
+            document.getElementById('progress-bar').style.width = percent + '%';
+            document.getElementById('progress-percent').textContent = percent + '%';
+        }
+
+        // --- 檔案上傳解析 ---
         document.getElementById('file-selector').addEventListener('change', async function(e) {
             const files = Array.from(e.target.files);
             if (files.length === 0) return;
 
-            const loadingOverlay = document.getElementById('loading-overlay');
-            const loadingText = document.getElementById('loading-text');
-            loadingOverlay.style.display = 'flex';
+            showLoading(true);
 
-            // 排序檔案
             files.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
-            pagesData = [];
-            currentIndex = -1;
+            pagesData = []; currentIndex = -1;
 
             for (const file of files) {
                 if (file.type === 'application/pdf') {
-                    loadingText.textContent = `解析中 PDF: ${file.name}`;
                     try {
                         const buffer = await file.arrayBuffer();
                         const pdf = await pdfjsLib.getDocument({data: buffer}).promise;
-                        for (let i = 1; i <= pdf.numPages; i++) {
+                        const totalPages = pdf.numPages;
+
+                        for (let i = 1; i <= totalPages; i++) {
+                            // 更新進度條 UI
+                            updateProgress(i, totalPages, `正在拆解 PDF: 第 ${i} / ${totalPages} 頁`);
+                            
+                            // ❗關鍵：強迫程式暫停 10 毫秒，讓瀏覽器有時間把畫面更新出來
+                            await new Promise(r => setTimeout(r, 10));
+
                             const page = await pdf.getPage(i);
-                            const viewport = page.getViewport({ scale: 2.0 }); // 2倍解析度確保清晰
+                            const viewport = page.getViewport({ scale: 2.0 }); 
                             const canvas = document.createElement('canvas');
                             const ctx = canvas.getContext('2d');
                             canvas.height = viewport.height;
@@ -193,12 +228,12 @@
                             await page.render({ canvasContext: ctx, viewport: viewport }).promise;
                             pagesData.push({
                                 name: `${file.name.replace('.pdf', '')}_P${i}`,
-                                url: canvas.toDataURL('image/png'), // 全面改用穩定的 PNG 格式
+                                url: canvas.toDataURL('image/png'),
                                 overlays: []
                             });
                         }
                     } catch (err) {
-                        alert("PDF 解析出錯，請確認檔案是否受保護或損毀：" + err.message);
+                        alert("PDF 解析出錯：" + err.message);
                     }
                 } else {
                     pagesData.push({
@@ -211,9 +246,10 @@
 
             renderPageList();
             if(pagesData.length > 0) loadPage(0);
-            loadingOverlay.style.display = 'none';
+            hideLoading();
         });
 
+        // UI 與畫框邏輯保持不變
         function renderPageList() {
             const list = document.getElementById('page-list');
             list.innerHTML = '';
@@ -229,26 +265,19 @@
         function loadPage(index) {
             if (index < 0 || index >= pagesData.length) return;
             saveCurrentOverlays(); 
-
             currentIndex = index;
             document.getElementById('status-text').textContent = `正在編輯：${pagesData[index].name} (${index + 1} / ${pagesData.length})`;
-            
             renderPageList();
-
             img.src = pagesData[index].url;
             img.style.display = 'block';
-
             img.onload = () => { renderOverlays(); };
         }
 
-        // 把【原始像素】轉回【當前網頁網格】渲染在畫面
         function renderOverlays() {
             document.querySelectorAll('.text-overlay').forEach(el => el.remove());
             if (currentIndex === -1) return;
-
             const scaleX = img.clientWidth / img.naturalWidth;
             const scaleY = img.clientHeight / img.naturalHeight;
-
             pagesData[currentIndex].overlays.forEach((data) => {
                 createOverlayElement(data.x * scaleX, data.y * scaleY, data.w * scaleX, data.h * scaleY, data.text);
             });
@@ -256,26 +285,20 @@
 
         function saveCurrentOverlays() {
             if (currentIndex === -1 || !img.clientWidth) return;
-
             const scaleX = img.naturalWidth / img.clientWidth;
             const scaleY = img.naturalHeight / img.clientHeight;
             const elements = document.querySelectorAll('.text-overlay');
             const currentOverlays = [];
-
             elements.forEach(el => {
                 currentOverlays.push({
-                    x: parseFloat(el.style.left) * scaleX,
-                    y: parseFloat(el.style.top) * scaleY,
-                    w: parseFloat(el.style.width) * scaleX,
-                    h: parseFloat(el.style.height) * scaleY,
+                    x: parseFloat(el.style.left) * scaleX, y: parseFloat(el.style.top) * scaleY,
+                    w: parseFloat(el.style.width) * scaleX, h: parseFloat(el.style.height) * scaleY,
                     text: el.querySelector('textarea').value
                 });
             });
-
             pagesData[currentIndex].overlays = currentOverlays;
         }
 
-        // 滑鼠手勢畫框
         container.addEventListener('mousedown', (e) => {
             if (currentIndex === -1 || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'BUTTON') return;
             const rect = container.getBoundingClientRect();
@@ -289,10 +312,8 @@
             if (!isDrawing) return;
             const rect = container.getBoundingClientRect();
             const currentX = e.clientX - rect.left; const currentY = e.clientY - rect.top;
-            drawBox.style.left = Math.min(startX, currentX) + 'px';
-            drawBox.style.top = Math.min(startY, currentY) + 'px';
-            drawBox.style.width = Math.abs(currentX - startX) + 'px';
-            drawBox.style.height = Math.abs(currentY - startY) + 'px';
+            drawBox.style.left = Math.min(startX, currentX) + 'px'; drawBox.style.top = Math.min(startY, currentY) + 'px';
+            drawBox.style.width = Math.abs(currentX - startX) + 'px'; drawBox.style.height = Math.abs(currentY - startY) + 'px';
         });
 
         container.addEventListener('mouseup', (e) => {
@@ -300,14 +321,11 @@
             isDrawing = false; drawBox.style.display = 'none';
             const rect = container.getBoundingClientRect();
             const endX = e.clientX - rect.left; const endY = e.clientY - rect.top;
-            
             const x = Math.min(startX, endX); const y = Math.min(startY, endY);
             const w = Math.abs(endX - startX); const h = Math.abs(endY - startY);
-
             if (w > 15 && h > 15) {
                 createOverlayElement(x, y, w, h, '');
-                saveCurrentOverlays();
-                renderPageList();
+                saveCurrentOverlays(); renderPageList();
             }
         });
 
@@ -329,7 +347,6 @@
             container.appendChild(overlay);
         }
 
-        // 核心底層：高精度畫布燒錄引擎
         function generateCanvasImage(page) {
             return new Promise((resolve) => {
                 const imgObj = new Image();
@@ -339,14 +356,10 @@
                     const ctx = canvas.getContext('2d');
                     canvas.width = imgObj.naturalWidth; canvas.height = imgObj.naturalHeight;
 
-                    // 1. 畫底圖
                     ctx.drawImage(imgObj, 0, 0);
-
-                    // 2. 塗白與嵌字
                     page.overlays.forEach(overlay => {
                         ctx.fillStyle = 'white';
                         ctx.fillRect(overlay.x, overlay.y, overlay.w, overlay.h);
-
                         if (!overlay.text.trim()) return;
 
                         const lines = overlay.text.split('\n');
@@ -366,48 +379,44 @@
                             ctx.fillText(line, overlay.x + overlay.w / 2, startY + (index * lineHeight));
                         });
                     });
-
-                    // 導出純粹的 PNG DataURL，避免跟格式衝突
                     resolve(canvas.toDataURL('image/png'));
                 };
             });
         }
 
-        // 【打包匯出：修復版】
+        // --- 匯出 PDF 加入進度條 ---
         async function exportAsPDF() {
             saveCurrentOverlays();
             if (pagesData.length === 0) return alert("請先載入檔案！");
             
-            const loadingOverlay = document.getElementById('loading-overlay');
-            const loadingText = document.getElementById('loading-text');
-            loadingOverlay.style.display = 'flex';
-            
+            showLoading(true);
+            const totalPages = pagesData.length;
             const { jsPDF } = window.jspdf;
-            // 建立乾淨的 PDF 物件
             const pdf = new jsPDF({ orientation: 'p', unit: 'px', compress: true });
-            pdf.deletePage(1); // 刪除預設頁
+            pdf.deletePage(1); 
 
-            for (let i = 0; i < pagesData.length; i++) {
-                loadingText.textContent = `打包 PDF 中: 第 ${i+1} / ${pagesData.length} 頁`;
+            for (let i = 0; i < totalPages; i++) {
+                // 更新進度條 UI
+                updateProgress(i + 1, totalPages, `打包 PDF 中: 第 ${i+1} / ${totalPages} 頁`);
+                
+                // ❗關鍵：強迫程式暫停，讓畫面可以更新進度條
+                await new Promise(r => setTimeout(r, 10));
                 
                 const dataUrl = await generateCanvasImage(pagesData[i]);
-                
-                // 獲取圖片真實長寬，防止壓縮變形
                 const checkImg = new Image();
                 checkImg.src = dataUrl;
                 await new Promise(r => checkImg.onload = r);
                 
                 const orient = checkImg.width > checkImg.height ? 'l' : 'p';
-                
-                // 精準建立與原圖寬高一致的頁面，改用相容性極高的 'PNG' 格式寫入
                 pdf.addPage([checkImg.width, checkImg.height], orient);
                 pdf.addImage(dataUrl, 'PNG', 0, 0, checkImg.width, checkImg.height, undefined, 'FAST');
             }
             
-            loadingText.textContent = `封裝檔案中...`;
-            pdf.save("Manga_Translated.pdf");
+            updateProgress(totalPages, totalPages, "檔案封裝中，即將下載...");
+            await new Promise(r => setTimeout(r, 100)); // 預留一點時間顯示100%
             
-            loadingOverlay.style.display = 'none';
+            pdf.save("Manga_Translated.pdf");
+            hideLoading();
             document.getElementById('status-text').textContent = "✅ PDF 成功匯出！";
         }
     </script>
