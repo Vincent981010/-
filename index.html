@@ -112,7 +112,7 @@
         #progress-percent {
             margin-top: 8px; font-weight: bold; color: #555; display: none;
         }
-    </script>
+    </style>
 </head>
 <body>
 
@@ -228,4 +228,254 @@
 
                             const page = await pdf.getPage(i);
                             const viewport = page.getViewport({ scale: 2.0 }); 
-                            const canvas = document.createElement('canvas
+                            const canvas = document.createElement('canvas');
+                            const ctx = canvas.getContext('2d');
+                            canvas.height = viewport.height;
+                            canvas.width = viewport.width;
+
+                            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+                            pagesData.push({
+                                name: `${file.name.replace('.pdf', '')}_P${i}`,
+                                url: canvas.toDataURL('image/png'),
+                                overlays: []
+                            });
+                        }
+                    } catch (err) {
+                        alert("PDF 解析出錯：" + err.message);
+                    }
+                } else {
+                    pagesData.push({
+                        name: file.name,
+                        url: URL.createObjectURL(file),
+                        overlays: []
+                    });
+                }
+            }
+            renderPageList();
+            if(pagesData.length > 0) loadPage(0);
+            hideLoading();
+            e.target.value = '';
+        });
+
+        // --- 載入專案 (.json) ---
+        document.getElementById('project-selector').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            showLoading(false, "讀取專案進度中...");
+            
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                try {
+                    const loadedData = JSON.parse(event.target.result);
+                    if (!Array.isArray(loadedData)) throw new Error("無效的專案格式");
+                    
+                    pagesData = loadedData;
+                    currentIndex = -1;
+                    renderPageList();
+                    if(pagesData.length > 0) loadPage(0);
+                    hideLoading();
+                    alert('✅ 專案進度載入成功！可以繼續編輯了。');
+                } catch(err) {
+                    hideLoading();
+                    alert('專案檔讀取失敗，檔案可能已損壞！');
+                    console.error(err);
+                }
+            };
+            reader.readAsText(file);
+            e.target.value = '';
+        });
+
+        // --- 儲存專案 (.json) ---
+        function saveProject() {
+            saveCurrentOverlays();
+            if (pagesData.length === 0) {
+                return alert("目前沒有載入任何內容，無法儲存進度！");
+            }
+
+            const dataStr = JSON.stringify(pagesData);
+            const blob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            
+            const date = new Date();
+            const dateString = `${date.getMonth()+1}月${date.getDate()}日_${date.getHours()}時${date.getMinutes()}分`;
+            a.download = `漫畫翻譯進度_${dateString}.json`;
+            
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // 核心 UI 與畫框邏輯
+        function renderPageList() {
+            const list = document.getElementById('page-list');
+            list.innerHTML = '';
+            pagesData.forEach((page, index) => {
+                const item = document.createElement('div');
+                item.className = 'page-item' + (index === currentIndex ? ' active' : '') + (page.overlays.length > 0 ? ' edited' : '');
+                item.textContent = `📄 ${page.name}`;
+                item.onclick = () => loadPage(index);
+                list.appendChild(item);
+            });
+        }
+
+        function loadPage(index) {
+            if (index < 0 || index >= pagesData.length) return;
+            saveCurrentOverlays(); 
+            currentIndex = index;
+            document.getElementById('status-text').textContent = `正在編輯：${pagesData[index].name} (${index + 1} / ${pagesData.length})`;
+            renderPageList();
+            img.src = pagesData[index].url;
+            img.style.display = 'block';
+            img.onload = () => { renderOverlays(); };
+        }
+
+        function renderOverlays() {
+            document.querySelectorAll('.text-overlay').forEach(el => el.remove());
+            if (currentIndex === -1) return;
+            const scaleX = img.clientWidth / img.naturalWidth;
+            const scaleY = img.clientHeight / img.naturalHeight;
+            pagesData[currentIndex].overlays.forEach((data) => {
+                createOverlayElement(data.x * scaleX, data.y * scaleY, data.w * scaleX, data.h * scaleY, data.text);
+            });
+        }
+
+        function saveCurrentOverlays() {
+            if (currentIndex === -1 || !img.clientWidth) return;
+            const scaleX = img.naturalWidth / img.clientWidth;
+            const scaleY = img.naturalHeight / img.clientHeight;
+            const elements = document.querySelectorAll('.text-overlay');
+            const currentOverlays = [];
+            elements.forEach(el => {
+                currentOverlays.push({
+                    x: parseFloat(el.style.left) * scaleX, y: parseFloat(el.style.top) * scaleY,
+                    w: parseFloat(el.style.width) * scaleX, h: parseFloat(el.style.height) * scaleY,
+                    text: el.querySelector('textarea').value
+                });
+            });
+            pagesData[currentIndex].overlays = currentOverlays;
+        }
+
+        container.addEventListener('mousedown', (e) => {
+            if (currentIndex === -1 || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'BUTTON') return;
+            const rect = container.getBoundingClientRect();
+            startX = e.clientX - rect.left; startY = e.clientY - rect.top;
+            isDrawing = true;
+            drawBox.style.left = startX + 'px'; drawBox.style.top = startY + 'px';
+            drawBox.style.width = '0px'; drawBox.style.height = '0px'; drawBox.style.display = 'block';
+        });
+
+        container.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+            const rect = container.getBoundingClientRect();
+            const currentX = e.clientX - rect.left; const currentY = e.clientY - rect.top;
+            drawBox.style.left = Math.min(startX, currentX) + 'px'; drawBox.style.top = Math.min(startY, currentY) + 'px';
+            drawBox.style.width = Math.abs(currentX - startX) + 'px'; drawBox.style.height = Math.abs(currentY - startY) + 'px';
+        });
+
+        container.addEventListener('mouseup', (e) => {
+            if (!isDrawing) return;
+            isDrawing = false; drawBox.style.display = 'none';
+            const rect = container.getBoundingClientRect();
+            const endX = e.clientX - rect.left; const endY = e.clientY - rect.top;
+            const x = Math.min(startX, endX); const y = Math.min(startY, endY);
+            const w = Math.abs(endX - startX); const h = Math.abs(endY - startY);
+            if (w > 15 && h > 15) {
+                createOverlayElement(x, y, w, h, '');
+                saveCurrentOverlays(); renderPageList();
+            }
+        });
+
+        function createOverlayElement(x, y, w, h, text) {
+            const overlay = document.createElement('div');
+            overlay.className = 'text-overlay';
+            overlay.style.left = x + 'px'; overlay.style.top = y + 'px';
+            overlay.style.width = w + 'px'; overlay.style.height = h + 'px';
+
+            const delBtn = document.createElement('button');
+            delBtn.className = 'delete-btn'; delBtn.textContent = '刪除';
+            delBtn.onclick = () => { overlay.remove(); saveCurrentOverlays(); renderPageList(); };
+
+            const textarea = document.createElement('textarea');
+            textarea.value = text; textarea.placeholder = "請輸入中文...";
+            textarea.oninput = () => saveCurrentOverlays();
+
+            overlay.appendChild(delBtn); overlay.appendChild(textarea);
+            container.appendChild(overlay);
+        }
+
+        function generateCanvasImage(page) {
+            return new Promise((resolve) => {
+                const imgObj = new Image();
+                imgObj.src = page.url;
+                imgObj.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = imgObj.naturalWidth; canvas.height = imgObj.naturalHeight;
+
+                    ctx.drawImage(imgObj, 0, 0);
+                    page.overlays.forEach(overlay => {
+                        ctx.fillStyle = 'white';
+                        ctx.fillRect(overlay.x, overlay.y, overlay.w, overlay.h);
+                        if (!overlay.text.trim()) return;
+
+                        const lines = overlay.text.split('\n');
+                        let fontSize = overlay.w * 0.13; 
+                        if (fontSize * lines.length > overlay.h) fontSize = overlay.h / (lines.length + 0.4);
+                        fontSize = Math.max(14, Math.min(fontSize, 45));
+
+                        ctx.fillStyle = 'black';
+                        ctx.font = `bold ${fontSize}px '微軟正黑體', sans-serif`;
+                        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+
+                        const lineHeight = fontSize * 1.3;
+                        const totalHeight = lines.length * lineHeight;
+                        const startY = overlay.y + (overlay.h - totalHeight) / 2;
+
+                        lines.forEach((line, index) => {
+                            ctx.fillText(line, overlay.x + overlay.w / 2, startY + (index * lineHeight));
+                        });
+                    });
+                    resolve(canvas.toDataURL('image/png'));
+                };
+            });
+        }
+
+        async function exportAsPDF() {
+            saveCurrentOverlays();
+            if (pagesData.length === 0) return alert("請先載入檔案！");
+            
+            showLoading(true);
+            const totalPages = pagesData.length;
+            const { jsPDF } = window.jspdf;
+            const pdf = new jsPDF({ orientation: 'p', unit: 'px', compress: true });
+            pdf.deletePage(1); 
+
+            for (let i = 0; i < totalPages; i++) {
+                updateProgress(i + 1, totalPages, `打包 PDF 中: 第 ${i+1} / ${totalPages} 頁`);
+                await new Promise(r => setTimeout(r, 10));
+                
+                const dataUrl = await generateCanvasImage(pagesData[i]);
+                const checkImg = new Image();
+                checkImg.src = dataUrl;
+                await new Promise(r => checkImg.onload = r);
+                
+                const orient = checkImg.width > checkImg.height ? 'l' : 'p';
+                pdf.addPage([checkImg.width, checkImg.height], orient);
+                pdf.addImage(dataUrl, 'PNG', 0, 0, checkImg.width, checkImg.height, undefined, 'FAST');
+            }
+            
+            updateProgress(totalPages, totalPages, "檔案封裝中，即將下載...");
+            await new Promise(r => setTimeout(r, 100)); 
+            
+            pdf.save("Manga_Translated.pdf");
+            hideLoading();
+            document.getElementById('status-text').textContent = "✅ PDF 成功匯出！";
+        }
+    </script>
+</body>
+</html>
