@@ -1,151 +1,66 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html>
 <head>
     <meta charset="UTF-8">
-    <title>漫畫翻譯工作站</title>
-    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+    <title>漫畫工具</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <style>
-        body { font-family: sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
-        .toolbar { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        .workspace { display: flex; gap: 20px; height: 70vh; }
-        .page-list { width: 200px; background: white; padding: 10px; border-radius: 8px; overflow-y: auto; }
-        .page-item { padding: 10px; cursor: pointer; border-bottom: 1px solid #eee; }
-        .page-item.active { background: #007bff; color: white; }
-        .editor { flex: 1; background: white; position: relative; overflow: auto; display: flex; justify-content: center; }
-        #canvas-container { position: relative; cursor: crosshair; }
-        .text-box { position: absolute; background: white; border: 1px solid blue; padding: 2px; box-sizing: border-box; }
-        textarea { width: 100%; height: 100%; border: none; resize: none; font-size: 16px; text-align: center; }
-    </style>
 </head>
 <body>
 
-<div class="toolbar">
     <input type="file" id="fileInput" accept="application/pdf,image/*" multiple>
-    <button onclick="exportPDF()">匯出成 PDF</button>
-</div>
+    <button onclick="processFiles()">開始處理</button>
+    <div id="debug" style="color: red;"></div>
+    <div id="container" style="position: relative; margin-top: 20px;"></div>
 
-<div class="workspace">
-    <div id="pageList" class="page-list"></div>
-    <div class="editor">
-        <div id="canvas-container">
-            <img id="displayImg" style="max-width: 100%; pointer-events: none;">
-        </div>
-    </div>
-</div>
+    <script>
+        // 設定 worker 路徑
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-<script>
-    let pages = [];
-    let currentIndex = 0;
+        async function processFiles() {
+            const input = document.getElementById('fileInput');
+            const debug = document.getElementById('debug');
+            const container = document.getElementById('container');
+            
+            if (input.files.length === 0) return alert("請選取檔案");
+            debug.innerText = "處理中...";
 
-    // 設定 Worker
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
-
-    document.getElementById('fileInput').addEventListener('change', async (e) => {
-        const files = Array.from(e.target.files);
-        pages = [];
-        for (let file of files) {
-            if (file.type === 'application/pdf') {
-                const arrayBuffer = await file.arrayBuffer();
-                const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
-                for (let i = 1; i <= pdf.numPages; i++) {
-                    const page = await pdf.getPage(i);
-                    const viewport = page.getViewport({scale: 2});
-                    const canvas = document.createElement('canvas');
-                    canvas.width = viewport.width;
-                    canvas.height = viewport.height;
-                    await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
-                    pages.push({url: canvas.toDataURL('image/jpeg'), boxes: []});
+            try {
+                for (let file of input.files) {
+                    if (file.type === 'application/pdf') {
+                        const buffer = await file.arrayBuffer();
+                        const pdf = await pdfjsLib.getDocument({data: buffer}).promise;
+                        for (let i = 1; i <= pdf.numPages; i++) {
+                            const page = await pdf.getPage(i);
+                            const vp = page.getViewport({scale: 1.5});
+                            const canvas = document.createElement('canvas');
+                            canvas.height = vp.height;
+                            canvas.width = vp.width;
+                            await page.render({canvasContext: canvas.getContext('2d'), viewport: vp}).promise;
+                            
+                            const img = new Image();
+                            img.src = canvas.toDataURL();
+                            img.style.display = "block";
+                            img.style.marginBottom = "20px";
+                            container.appendChild(img);
+                        }
+                    } else {
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                            const img = new Image();
+                            img.src = e.target.result;
+                            img.style.display = "block";
+                            img.style.marginBottom = "20px";
+                            container.appendChild(img);
+                        };
+                        reader.readAsDataURL(file);
+                    }
                 }
-            } else {
-                pages.push({url: URL.createObjectURL(file), boxes: []});
+                debug.innerText = "載入完成";
+            } catch (err) {
+                debug.innerText = "錯誤: " + err.message;
             }
         }
-        renderList();
-        showPage(0);
-    });
-
-    function renderList() {
-        const list = document.getElementById('pageList');
-        list.innerHTML = '';
-        pages.forEach((p, i) => {
-            const div = document.createElement('div');
-            div.className = 'page-item' + (i === currentIndex ? ' active' : '');
-            div.textContent = `頁面 ${i + 1}`;
-            div.onclick = () => { saveBoxes(); currentIndex = i; renderList(); showPage(i); };
-            list.appendChild(div);
-        });
-    }
-
-    function showPage(i) {
-        const img = document.getElementById('displayImg');
-        const container = document.getElementById('canvas-container');
-        img.src = pages[i].url;
-        // 清除舊輸入框
-        document.querySelectorAll('.text-box').forEach(el => el.remove());
-        // 恢復舊輸入框
-        pages[i].boxes.forEach(b => createBox(b.x, b.y, b.w, b.h, b.text));
-    }
-
-    // 畫框邏輯
-    let isDrawing = false, startX, startY;
-    document.getElementById('canvas-container').onmousedown = e => {
-        isDrawing = true;
-        startX = e.offsetX; startY = e.offsetY;
-    };
-    document.onmouseup = e => {
-        if (!isDrawing) return;
-        isDrawing = false;
-        createBox(startX, startY, e.offsetX - startX, e.offsetY - startY, '');
-    };
-
-    function createBox(x, y, w, h, text) {
-        const div = document.createElement('div');
-        div.className = 'text-box';
-        div.style.left = x + 'px'; div.style.top = y + 'px';
-        div.style.width = Math.abs(w) + 'px'; div.style.height = Math.abs(h) + 'px';
-        div.innerHTML = `<textarea>${text}</textarea>`;
-        document.getElementById('canvas-container').appendChild(div);
-    }
-
-    function saveBoxes() {
-        if (!pages[currentIndex]) return;
-        pages[currentIndex].boxes = Array.from(document.querySelectorAll('.text-box')).map(el => ({
-            x: parseInt(el.style.left), y: parseInt(el.style.top),
-            w: parseInt(el.style.width), h: parseInt(el.style.height),
-            text: el.querySelector('textarea').value
-        }));
-    }
-
-    async function exportPDF() {
-        saveBoxes();
-        const { jsPDF } = window.jspdf;
-        const pdf = new jsPDF({unit: 'px', format: 'a4'});
-        pdf.deletePage(1);
-
-        for (let p of pages) {
-            const img = new Image();
-            img.src = p.url;
-            await new Promise(r => img.onload = r);
-            
-            const canvas = document.createElement('canvas');
-            canvas.width = img.width; canvas.height = img.height;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-            
-            p.boxes.forEach(b => {
-                ctx.fillStyle = 'white';
-                ctx.fillRect(b.x, b.y, b.w, b.h);
-                ctx.fillStyle = 'black';
-                ctx.font = 'bold 20px Arial';
-                ctx.fillText(b.text, b.x + 5, b.y + 20);
-            });
-
-            pdf.addPage([img.width, img.height]);
-            pdf.addImage(canvas.toDataURL(), 'JPEG', 0, 0, img.width, img.height);
-        }
-        pdf.save("translated.pdf");
-    }
-</script>
+    </script>
 </body>
 </html>
